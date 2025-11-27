@@ -1,3 +1,5 @@
+from aiohttp import web
+from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 import asyncio
 import logging
 import os
@@ -677,9 +679,28 @@ async def cb_generate_quiz(cb: CallbackQuery):
 
 async def main():
     logging.basicConfig(level=logging.INFO)
+
+    # Initialize database
     init_db()
-    await dp.start_polling(bot)
+
+    # Create aiohttp web app
+    app = web.Application()
+
+    # Register Telegram webhook handler on path /webhook
+    SimpleRequestHandler(
+        dispatcher=dp,
+        bot=bot,
+    ).register(app, path="/webhook")
+
+    # Let aiogram attach its startup/shutdown handlers
+    setup_application(app, dp, bot=bot)
+
+    return app
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    web.run_app(
+        main(),
+        host="0.0.0.0",
+        port=int(os.getenv("PORT", "8080")),
+    )
