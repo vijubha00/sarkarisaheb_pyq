@@ -23,7 +23,7 @@ from aiogram.enums import ParseMode
 BOT_TOKEN = os.getenv("BOT_TOKEN", "6582678746:AAFcuzidqLZ3gJqwjaEU1SrKNm8mGNwoBCM")
 
 # Replace with your Telegram user ID(s)
-ADMIN_IDS = {123456789}  # set of ints
+ADMIN_IDS = {8226659957}  # set of ints
 
 
 # ========================
