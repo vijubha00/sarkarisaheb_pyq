@@ -30,8 +30,8 @@ ADMIN_IDS = {8226659957}  # set of ints
 # DATABASE HELPER
 # ========================
 
-#DB_PATH = "questions.db"
-DB_PATH = "/data/questions.db"
+DB_PATH = "questions.db"
+#DB_PATH = "/data/questions.db"
 
 
 def get_db_connection():
