@@ -126,24 +126,27 @@ def get_distinct_values(field: str, filters: dict | None = None) -> list[str]:
     if field not in {"board", "exam", "subject", "topic"}:
         return []
 
-    where_clauses = []
+    clauses = []
     params: list = []
 
     if filters:
-        # For narrowing down topics based on existing filters
+        # Narrow down values based on already chosen filters
         for f_name in ["board", "exam", "subject"]:
             if f_name in filters and filters[f_name]:
-                where_clauses.append(f"{f_name} = ?")
+                clauses.append(f"{f_name} = ?")
                 params.append(filters[f_name])
 
+    # Always ensure we don't return empty/null values
+    clauses.append(f"{field} IS NOT NULL")
+    clauses.append(f"{field} != ''")
+
     where_sql = ""
-    if where_clauses:
-        where_sql = "WHERE " + " AND ".join(where_clauses)
+    if clauses:
+        where_sql = "WHERE " + " AND ".join(clauses)
 
     with closing(get_db_connection()) as conn, conn:
         cur = conn.execute(
-            f"SELECT DISTINCT {field} FROM questions {where_sql} "
-            f"WHERE {field} IS NOT NULL AND {field} != ''",
+            f"SELECT DISTINCT {field} FROM questions {where_sql}",
             params,
         )
         return [row[field] for row in cur.fetchall() if row[field] is not None]
