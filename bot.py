@@ -39,7 +39,6 @@ def get_db_connection():
     conn.row_factory = sqlite3.Row
     return conn
 
-
 def init_db():
     with closing(get_db_connection()) as conn, conn:
         conn.execute(
@@ -67,9 +66,11 @@ def init_db():
             CREATE TABLE IF NOT EXISTS user_filters (
                 user_id INTEGER PRIMARY KEY,
                 board TEXT,
+                year TEXT,
                 exam TEXT,
                 subject TEXT,
-                topic TEXT
+                topic TEXT,
+                subtopic TEXT
             )
             """
         )
@@ -85,21 +86,24 @@ def get_or_create_user_filters(user_id: int) -> dict:
             return dict(row)
 
         conn.execute(
-            "INSERT INTO user_filters (user_id, board, exam, subject, topic) "
-            "VALUES (?, NULL, NULL, NULL, NULL)",
+            "INSERT INTO user_filters (user_id, board, year, exam, subject, topic, subtopic) "
+            "VALUES (?, NULL, NULL, NULL, NULL, NULL, NULL)",
             (user_id,),
         )
         return {
             "user_id": user_id,
             "board": None,
+            "year": None,
             "exam": None,
             "subject": None,
             "topic": None,
+            "subtopic": None,
         }
 
 
 def update_user_filter(user_id: int, field: str, value: str | None):
-    if field not in {"board", "exam", "subject", "topic"}:
+    # all fields that can be set from UI
+    if field not in {"board", "year", "exam", "subject", "topic", "subtopic"}:
         return
     with closing(get_db_connection()) as conn, conn:
         conn.execute(
@@ -112,7 +116,8 @@ def reset_user_filters(user_id: int):
     with closing(get_db_connection()) as conn, conn:
         conn.execute(
             "UPDATE user_filters "
-            "SET board = NULL, exam = NULL, subject = NULL, topic = NULL "
+            "SET board = NULL, year = NULL, exam = NULL, "
+            "subject = NULL, topic = NULL, subtopic = NULL "
             "WHERE user_id = ?",
             (user_id,),
         )
@@ -120,23 +125,23 @@ def reset_user_filters(user_id: int):
 
 def get_distinct_values(field: str, filters: dict | None = None) -> list[str]:
     """
-    field: 'board' | 'exam' | 'subject' | 'topic'
+    field: 'board' | 'year' | 'exam' | 'subject' | 'topic' | 'subtopic'
     filters: can restrict by previous selections
     """
-    if field not in {"board", "exam", "subject", "topic"}:
+    if field not in {"board", "year", "exam", "subject", "topic", "subtopic"}:
         return []
 
     clauses = []
     params: list = []
 
     if filters:
-        # Narrow down values based on already chosen filters
-        for f_name in ["board", "exam", "subject"]:
-            if f_name in filters and filters[f_name]:
+        # Narrow down based on currently chosen filters
+        for f_name in ["board", "year", "exam", "subject", "topic", "subtopic"]:
+            if f_name in filters and filters[f_name] and f_name != field:
                 clauses.append(f"{f_name} = ?")
                 params.append(filters[f_name])
 
-    # Always ensure we don't return empty/null values
+    # Don't return empty/null values
     clauses.append(f"{field} IS NOT NULL")
     clauses.append(f"{field} != ''")
 
@@ -149,14 +154,14 @@ def get_distinct_values(field: str, filters: dict | None = None) -> list[str]:
             f"SELECT DISTINCT {field} FROM questions {where_sql}",
             params,
         )
-        return [row[field] for row in cur.fetchall() if row[field] is not None]
+        return [str(row[field]) for row in cur.fetchall() if row[field] is not None]
 
 
 def get_questions_for_filters(filters: dict, limit: int = 10) -> list[sqlite3.Row]:
     where_clauses = []
     params: list = []
 
-    for field in ["board", "exam", "subject", "topic"]:
+    for field in ["board", "year", "exam", "subject", "topic", "subtopic"]:
         val = filters.get(field)
         if val:
             where_clauses.append(f"{field} = ?")
@@ -237,32 +242,23 @@ def main_menu_kb(user_id: int) -> InlineKeyboardMarkup:
         return v if v else "All"
 
     text_board = f"📚 Board: {val_or_dash(filters.get('board'))}"
+    text_year = f"📅 Year: {val_or_dash(filters.get('year'))}"
     text_exam = f"🧪 Exam: {val_or_dash(filters.get('exam'))}"
     text_subject = f"📖 Subject: {val_or_dash(filters.get('subject'))}"
     text_topic = f"🧩 Topic: {val_or_dash(filters.get('topic'))}"
+    text_subtopic = f"🔹 Subtopic: {val_or_dash(filters.get('subtopic'))}"
 
     kb = [
-        [
-            InlineKeyboardButton(text=text_board, callback_data="choose_board"),
-        ],
-        [
-            InlineKeyboardButton(text=text_exam, callback_data="choose_exam"),
-        ],
-        [
-            InlineKeyboardButton(text=text_subject, callback_data="choose_subject"),
-        ],
-        [
-            InlineKeyboardButton(text=text_topic, callback_data="choose_topic"),
-        ],
-        [
-            InlineKeyboardButton(text="🎯 Generate quiz", callback_data="generate_quiz"),
-        ],
-        [
-            InlineKeyboardButton(text="♻️ Reset filters", callback_data="reset_filters"),
-        ],
+        [InlineKeyboardButton(text=text_board, callback_data="choose_board")],
+        [InlineKeyboardButton(text=text_year, callback_data="choose_year")],
+        [InlineKeyboardButton(text=text_exam, callback_data="choose_exam")],
+        [InlineKeyboardButton(text=text_subject, callback_data="choose_subject")],
+        [InlineKeyboardButton(text=text_topic, callback_data="choose_topic")],
+        [InlineKeyboardButton(text=text_subtopic, callback_data="choose_subtopic")],
+        [InlineKeyboardButton(text="🎯 Generate quiz", callback_data="generate_quiz")],
+        [InlineKeyboardButton(text="♻️ Reset filters", callback_data="reset_filters")],
     ]
     return InlineKeyboardMarkup(inline_keyboard=kb)
-
 
 def values_list_kb(prefix: str, values: list[str]) -> InlineKeyboardMarkup:
     rows = []
@@ -521,6 +517,18 @@ async def cb_choose_board(cb: CallbackQuery):
     )
     await cb.answer()
 
+@dp.callback_query(F.data == "choose_year")
+async def cb_choose_year(cb: CallbackQuery):
+    filters = get_or_create_user_filters(cb.from_user.id)
+    values = get_distinct_values("year", filters)
+    if not values:
+        await cb.answer("No years for current filters.", show_alert=True)
+        return
+    await cb.message.edit_text(
+        "Select <b>Year</b>:", reply_markup=values_list_kb("set_year", values)
+    )
+    await cb.answer()
+
 
 @dp.callback_query(F.data == "choose_exam")
 async def cb_choose_exam(cb: CallbackQuery):
@@ -560,12 +568,33 @@ async def cb_choose_topic(cb: CallbackQuery):
     )
     await cb.answer()
 
+@dp.callback_query(F.data == "choose_subtopic")
+async def cb_choose_subtopic(cb: CallbackQuery):
+    filters = get_or_create_user_filters(cb.from_user.id)
+    values = get_distinct_values("subtopic", filters)
+    if not values:
+        await cb.answer("No subtopics for current filters.", show_alert=True)
+        return
+    await cb.message.edit_text(
+        "Select <b>Subtopic</b>:", reply_markup=values_list_kb("set_subtopic", values)
+    )
+    await cb.answer()
+
 
 @dp.callback_query(F.data.startswith("set_board:"))
 async def cb_set_board(cb: CallbackQuery):
     value = cb.data.split("set_board:", 1)[1]
     update_user_filter(cb.from_user.id, "board", value)
     await cb.answer("Board set.")
+    await cb.message.edit_text(
+        "Filters updated:", reply_markup=main_menu_kb(cb.from_user.id)
+    )
+
+@dp.callback_query(F.data.startswith("set_year:"))
+async def cb_set_year(cb: CallbackQuery):
+    value = cb.data.split("set_year:", 1)[1]
+    update_user_filter(cb.from_user.id, "year", value)
+    await cb.answer("Year set.")
     await cb.message.edit_text(
         "Filters updated:", reply_markup=main_menu_kb(cb.from_user.id)
     )
@@ -596,6 +625,15 @@ async def cb_set_topic(cb: CallbackQuery):
     value = cb.data.split("set_topic:", 1)[1]
     update_user_filter(cb.from_user.id, "topic", value)
     await cb.answer("Topic set.")
+    await cb.message.edit_text(
+        "Filters updated:", reply_markup=main_menu_kb(cb.from_user.id)
+    )
+
+@dp.callback_query(F.data.startswith("set_subtopic:"))
+async def cb_set_subtopic(cb: CallbackQuery):
+    value = cb.data.split("set_subtopic:", 1)[1]
+    update_user_filter(cb.from_user.id, "subtopic", value)
+    await cb.answer("Subtopic set.")
     await cb.message.edit_text(
         "Filters updated:", reply_markup=main_menu_kb(cb.from_user.id)
     )
