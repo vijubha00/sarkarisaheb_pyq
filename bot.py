@@ -282,7 +282,13 @@ def values_list_kb(prefix: str, values: list[str]) -> InlineKeyboardMarkup:
 # BOT & DISPATCHER
 # ========================
 
-bot = Bot(BOT_TOKEN, parse_mode=ParseMode.HTML)
+#bot = Bot(BOT_TOKEN, parse_mode=ParseMode.HTML)
+from aiogram.client.default import DefaultBotProperties
+
+bot = Bot(
+    token=BOT_TOKEN,
+    default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+)
 dp = Dispatcher()
 
 
