@@ -3,7 +3,8 @@ from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_applicati
 import asyncio
 import logging
 import os
-import sqlite3
+import psycopg2
+from psycopg2.extras import RealDictCursor
 from contextlib import closing
 
 from aiogram import Bot, Dispatcher, F, types
@@ -32,21 +33,20 @@ ADMIN_IDS = {8226659957}  # set of ints
 # DATABASE HELPER
 # ========================
 
-DB_PATH = "questions.db"
-#DB_PATH = "/data/questions.db"
+DB_URL = os.getenv("DATABASE_URL")  # from Render env
 
 
 def get_db_connection():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
+    conn = psycopg2.connect(DB_URL)
     return conn
 
+
 def init_db():
-    with closing(get_db_connection()) as conn, conn:
-        conn.execute(
+    with closing(get_db_connection()) as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute(
             """
             CREATE TABLE IF NOT EXISTS questions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 board TEXT,
                 year INTEGER,
                 exam TEXT,
@@ -63,10 +63,10 @@ def init_db():
             )
             """
         )
-        conn.execute(
+        cur.execute(
             """
             CREATE TABLE IF NOT EXISTS user_filters (
-                user_id INTEGER PRIMARY KEY,
+                user_id BIGINT PRIMARY KEY,
                 board TEXT,
                 year TEXT,
                 exam TEXT,
@@ -79,19 +79,18 @@ def init_db():
 
 
 def get_or_create_user_filters(user_id: int) -> dict:
-    with closing(get_db_connection()) as conn, conn:
-        cur = conn.execute(
-            "SELECT * FROM user_filters WHERE user_id = ?", (user_id,)
-        )
+    with closing(get_db_connection()) as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute("SELECT * FROM user_filters WHERE user_id = %s", (user_id,))
         row = cur.fetchone()
         if row:
             return dict(row)
 
-        conn.execute(
+        cur.execute(
             "INSERT INTO user_filters (user_id, board, year, exam, subject, topic, subtopic) "
-            "VALUES (?, NULL, NULL, NULL, NULL, NULL, NULL)",
+            "VALUES (%s, NULL, NULL, NULL, NULL, NULL, NULL)",
             (user_id,),
         )
+        conn.commit()
         return {
             "user_id": user_id,
             "board": None,
@@ -104,32 +103,31 @@ def get_or_create_user_filters(user_id: int) -> dict:
 
 
 def update_user_filter(user_id: int, field: str, value: str | None):
-    # all fields that can be set from UI
     if field not in {"board", "year", "exam", "subject", "topic", "subtopic"}:
         return
-    with closing(get_db_connection()) as conn, conn:
-        conn.execute(
-            f"UPDATE user_filters SET {field} = ? WHERE user_id = ?",
+    with closing(get_db_connection()) as conn, conn.cursor() as cur:
+        cur.execute(
+            f"UPDATE user_filters SET {field} = %s WHERE user_id = %s",
             (value, user_id),
         )
+        conn.commit()
 
 
 def reset_user_filters(user_id: int):
-    with closing(get_db_connection()) as conn, conn:
-        conn.execute(
-            "UPDATE user_filters "
-            "SET board = NULL, year = NULL, exam = NULL, "
-            "subject = NULL, topic = NULL, subtopic = NULL "
-            "WHERE user_id = ?",
+    with closing(get_db_connection()) as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE user_filters
+            SET board = NULL, year = NULL, exam = NULL,
+                subject = NULL, topic = NULL, subtopic = NULL
+            WHERE user_id = %s
+            """,
             (user_id,),
         )
+        conn.commit()
 
 
 def get_distinct_values(field: str, filters: dict | None = None) -> list[str]:
-    """
-    field: 'board' | 'year' | 'exam' | 'subject' | 'topic' | 'subtopic'
-    filters: can restrict by previous selections
-    """
     if field not in {"board", "year", "exam", "subject", "topic", "subtopic"}:
         return []
 
@@ -137,61 +135,60 @@ def get_distinct_values(field: str, filters: dict | None = None) -> list[str]:
     params: list = []
 
     if filters:
-        # Narrow down based on currently chosen filters
         for f_name in ["board", "year", "exam", "subject", "topic", "subtopic"]:
             if f_name in filters and filters[f_name] and f_name != field:
-                clauses.append(f"{f_name} = ?")
+                clauses.append(f"{f_name} = %s")
                 params.append(filters[f_name])
 
-    # Don't return empty/null values
     clauses.append(f"{field} IS NOT NULL")
     clauses.append(f"{field} != ''")
 
-    where_sql = ""
-    if clauses:
-        where_sql = "WHERE " + " AND ".join(clauses)
+    where_sql = "WHERE " + " AND ".join(clauses) if clauses else ""
 
-    with closing(get_db_connection()) as conn, conn:
-        cur = conn.execute(
+    with closing(get_db_connection()) as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute(
             f"SELECT DISTINCT {field} FROM questions {where_sql}",
             params,
         )
-        return [str(row[field]) for row in cur.fetchall() if row[field] is not None]
+        rows = cur.fetchall()
+        return [str(row[field]) for row in rows if row[field] is not None]
 
 
-def get_questions_for_filters(filters: dict, limit: int = 10) -> list[sqlite3.Row]:
-    where_clauses = []
+def get_questions_for_filters(filters: dict, limit: int = 10) -> list[dict]:
+    clauses = []
     params: list = []
 
     for field in ["board", "year", "exam", "subject", "topic", "subtopic"]:
         val = filters.get(field)
         if val:
-            where_clauses.append(f"{field} = ?")
+            clauses.append(f"{field} = %s")
             params.append(val)
 
-    where_sql = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
+    where_sql = "WHERE " + " AND ".join(clauses) if clauses else ""
     sql = (
         "SELECT * FROM questions "
         f"{where_sql} "
         "ORDER BY RANDOM() "
-        "LIMIT ?"
+        "LIMIT %s"
     )
     params.append(limit)
-    with closing(get_db_connection()) as conn, conn:
-        cur = conn.execute(sql, params)
+
+    with closing(get_db_connection()) as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute(sql, params)
         return cur.fetchall()
 
 
 def insert_question(data: dict) -> int:
-    with closing(get_db_connection()) as conn, conn:
-        cur = conn.execute(
+    with closing(get_db_connection()) as conn, conn.cursor() as cur:
+        cur.execute(
             """
             INSERT INTO questions (
                 board, year, exam, subject, topic, subtopic,
                 question_text,
                 option1, option2, option3, option4,
                 correct_option, explanation
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING id
             """,
             (
                 data.get("board"),
@@ -209,7 +206,9 @@ def insert_question(data: dict) -> int:
                 data.get("explanation"),
             ),
         )
-        return cur.lastrowid
+        new_id = cur.fetchone()[0]
+        conn.commit()
+        return new_id
 
 
 # ========================
