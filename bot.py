@@ -19,6 +19,17 @@ from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.context import FSMContext
 from aiogram.enums import ParseMode
 
+
+CACHE = {
+    "board": [],
+    "year": [],
+    "exam": [],
+    "subject": [],
+    "topic": [],
+    "subtopic": [],
+    "version": 0,  # increments when new question added
+}
+
 # ========================
 # CONFIG
 # ========================
