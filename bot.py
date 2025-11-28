@@ -139,8 +139,16 @@ def reset_user_filters(user_id: int):
 
 
 def get_distinct_values(field: str, filters: dict | None = None) -> list[str]:
+    """
+    Cache-based distinct fetch. Uses DB only on first call or after cache reset.
+    Caches only unfiltered lists (filters=None), because there can be many filter combos.
+    """
     if field not in {"board", "year", "exam", "subject", "topic", "subtopic"}:
         return []
+
+    # If no filters and we already have cache, just use it
+    if not filters and CACHE.get(field):
+        return CACHE[field]
 
     clauses = []
     params: list = []
@@ -148,7 +156,7 @@ def get_distinct_values(field: str, filters: dict | None = None) -> list[str]:
     if filters:
         for f_name in ["board", "year", "exam", "subject", "topic", "subtopic"]:
             if f_name in filters and filters[f_name] and f_name != field:
-                clauses.append(f"{f_name} = %s")
+                clauses.append(f"{f_name} = ?")
                 params.append(filters[f_name])
 
     clauses.append(f"{field} IS NOT NULL")
@@ -156,14 +164,21 @@ def get_distinct_values(field: str, filters: dict | None = None) -> list[str]:
 
     where_sql = "WHERE " + " AND ".join(clauses) if clauses else ""
 
-    with closing(get_db_connection()) as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
-        cur.execute(
-            f"SELECT DISTINCT {field} FROM questions {where_sql}",
-            params,
-        )
+    with closing(get_db_connection()) as conn, conn:
+        cur = conn.execute(f"SELECT {field} FROM questions {where_sql}", params)
         rows = cur.fetchall()
-        return [str(row[field]) for row in rows if row[field] is not None]
 
+    result: list[str] = []
+    for row in rows:
+        val = row[field]
+        if val is not None and val != "" and str(val) not in result:
+            result.append(str(val))
+
+    # Only cache unfiltered lists
+    if not filters:
+        CACHE[field] = result
+
+    return result
 
 def get_questions_for_filters(filters: dict, limit: int = 10) -> list[dict]:
     clauses = []
