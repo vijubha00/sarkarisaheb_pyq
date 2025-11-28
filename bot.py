@@ -205,16 +205,15 @@ def get_questions_for_filters(filters: dict, limit: int = 10) -> list[dict]:
 
 
 def insert_question(data: dict) -> int:
-    with closing(get_db_connection()) as conn, conn.cursor() as cur:
-        cur.execute(
+    with closing(get_db_connection()) as conn, conn:
+        cur = conn.execute(
             """
             INSERT INTO questions (
                 board, year, exam, subject, topic, subtopic,
                 question_text,
                 option1, option2, option3, option4,
                 correct_option, explanation
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            RETURNING id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 data.get("board"),
@@ -232,10 +231,14 @@ def insert_question(data: dict) -> int:
                 data.get("explanation"),
             ),
         )
-        new_id = cur.fetchone()[0]
-        conn.commit()
-        return new_id
+        question_id = cur.lastrowid
 
+    # Invalidate cache after adding a question
+    CACHE["version"] += 1
+    for key in ["board", "year", "exam", "subject", "topic", "subtopic"]:
+        CACHE[key] = []
+
+    return question_id
 
 # ========================
 # FSM FOR ADMIN ADD QUESTION
