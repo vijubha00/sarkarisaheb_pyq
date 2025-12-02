@@ -140,8 +140,12 @@ def get_distinct_values(field: str, filters: dict | None = None) -> list[str]:
                 clauses.append(f"{f_name} = %s")
                 params.append(filters[f_name])
 
+    # Always ignore NULL
     clauses.append(f"{field} IS NOT NULL")
-    clauses.append(f"{field} != ''")
+
+    # Only for TEXT fields, ignore empty string
+    if field != "year":
+        clauses.append(f"{field} != ''")
 
     where_sql = "WHERE " + " AND ".join(clauses) if clauses else ""
 
